@@ -5,6 +5,7 @@ import sys
 import threading
 import tkinter as tk
 from tkinter import messagebox
+from client.core.launcher_window import ClientLauncher
 
 import tavern_shared.theme as _theme
 
@@ -319,37 +320,72 @@ def _open(root):
         window.open_window(root, game_dir)
 
 
-def _add_button(anchor):
+def _find_button(widget, text):
+    if isinstance(widget, tk.Button):
+        try:
+            if widget.cget("text") == text:
+                return widget
+        except Exception:
+            pass
+    for child in widget.winfo_children():
+        found = _find_button(child, text)
+        if found is not None:
+            return found
+    return None
+
+def _find_widget(widget, match):
     try:
-        root = anchor.winfo_toplevel()
-        if not hasattr(root, "v_exe"):
+        if match(widget):
+            return widget
+    except Exception:
+        pass
+    for child in widget.winfo_children():
+        found = _find_widget(child, match)
+        if found is not None:
+            return found
+    return None
+
+
+def _add_button(root, attempts=0):
+    try:
+        if getattr(root, "_modpacks_button", None) is not None:
             return
-        after = anchor
-        for child in anchor.master.pack_slaves():
-            try:
-                text = child.cget("text")
-            except Exception:
-                continue
-            if text == BUTTON_TEXT:
-                return
-            if text in AFTER_TEXTS:
-                after = child
-        for child in anchor.master.winfo_children():
-            try:
-                if child is getattr(root, "_modpacks_button", None) or child.cget("text") == BUTTON_TEXT:
-                    return
-            except Exception:
-                continue
-        button = _theme._btn(anchor.master, BUTTON_TEXT, lambda: _open(root),
-                             font=("Segoe UI", 9), pady=5, padx=10)
-        button.pack(side="left", padx=(6, 0), after=after)
+        header = _find_widget(root, lambda w: w.winfo_class() == "Label"
+                              and str(w.cget("text")) == "World & server tools")
+        grid = None
+        if header is not None:
+            # The grid frame is the sibling that holds the "Remote console" row.
+            for sibling in header.master.winfo_children():
+                if _find_widget(sibling, lambda w: w.winfo_class() == "Label"
+                                and str(w.cget("text")) == "Remote console"):
+                    grid = _find_widget(sibling, lambda w: w.winfo_class() == "Label"
+                                        and str(w.cget("text")) == "Remote console").master
+                    break
+        if grid is None:
+            if attempts < 20:
+                root.after(250, lambda: _add_button(root, attempts + 1))
+            return
+        last_label = _find_widget(grid, lambda w: w.winfo_class() == "Label"
+                                  and str(w.cget("text")) == "Remote console")
+        last_open = [c for c in grid.winfo_children() if c.winfo_class() != "Label"][-1]
+        row = max(c.grid_info().get("row", 0) for c in grid.winfo_children()) + 1
+        label_info, button_info = last_label.grid_info(), last_open.grid_info()
+
+        label = tk.Label(grid, text="Modpacks", bg=last_label.cget("bg"), fg=last_label.cget("fg"),
+                         font=last_label.cget("font"), anchor=last_label.cget("anchor"))
+        label.grid(row=row, column=label_info.get("column", 0),
+                   sticky=label_info.get("sticky", "w"),
+                   padx=label_info.get("padx", 0), pady=label_info.get("pady", 0))
+        button = _theme._btn(grid, "Open", lambda: _open(root), font=last_open.cget("font"), pady=5, padx=10)
+        button.grid(row=row, column=button_info.get("column", 1),
+                    sticky=button_info.get("sticky", "e"),
+                    padx=button_info.get("padx", 0), pady=button_info.get("pady", 0))
         root._modpacks_button = button
         if not getattr(root, "_modpacks_checked", False):
             root._modpacks_checked = True
             root.after(CHECK_DELAY_MS, lambda: _startup_check(root))
     except Exception:
         pass
-
 
 def _startup_check(root):
     try:
@@ -450,18 +486,12 @@ def _updated(root, done, error):
         pass
 
 
-def _wrap(orig):
-    def _btn(parent, text, cmd, style="normal", **kw):
-        button = orig(parent, text, cmd, style, **kw)
-        if text == MODS_BUTTON:
-            button.after_idle(lambda: button.after_idle(lambda: _add_button(button)))
-        return button
-    return _btn
+if not getattr(ClientLauncher, "_modpacks_patched", False):
+    _original_build_ui = ClientLauncher._build_ui
 
+    def _build_ui(self):
+        _original_build_ui(self)
+        _add_button(self)
 
-_theme._btn = _wrap(_theme._btn)
-
-for _name in ("client.core.launcher_window",):
-    _module = sys.modules.get(_name)
-    if _module is not None and callable(getattr(_module, "_btn", None)):
-        _module._btn = _wrap(_module._btn)
+    ClientLauncher._build_ui = _build_ui
+    ClientLauncher._modpacks_patched = True
